@@ -728,6 +728,27 @@
                 <CustomSelect v-model="organizeForm.use_ffprobe" :options="boolOptions" placeholder="请选择" />
               </div>
             </div>
+            <div class="form-row" v-if="organizeForm.action_type === 'move'">
+              <div class="form-group">
+                <label class="with-help">
+                  自动分类
+                  <span class="help-icon" @mouseover="autoCatTooltipVisible = true" @mouseleave="autoCatTooltipVisible = false">
+                    <i class="fas fa-question-circle"></i>
+                    <div class="tooltip" v-show="autoCatTooltipVisible">
+                      <div class="tooltip-content">
+                        <div class="tooltip-title">自动分类说明</div>
+                        <div class="tooltip-body">
+                          <p>开启后不再继承源目录层级，而是根据 TMDB 元数据自动分类。</p>
+                          <p>一次分类：电影 / 剧集 / 动漫 / 纪录片 / 综艺 / 演唱会</p>
+                          <p>二次分类：国产 / 欧美 / 日韩 / 其他</p>
+                        </div>
+                      </div>
+                    </div>
+                  </span>
+                </label>
+                <CustomSelect v-model="organizeForm.auto_categorize" :options="boolOptions" placeholder="请选择" />
+              </div>
+            </div>
           </div>
           <div class="dialog-footer">
             <button type="button" class="btn btn-primary" :disabled="organizeSaving" @click="saveOrganizeTask">
@@ -1598,6 +1619,7 @@ const organizeConflictPolicy = computed({
 })
 const organizeMaxWorksTooltipVisible = ref(false)
 const organizeMarkerTooltipVisible = ref(false)
+const autoCatTooltipVisible = ref(false)
 const branchDialogVisible = ref(false)
 const branchLoading = ref(false)
 const branchTask = ref(null)
@@ -1709,6 +1731,7 @@ const organizeForm = reactive({
   rename_marker: '',
   use_ffprobe: 'false',
   use_tmdb: 'true',
+  auto_categorize: 'false',
   recursive: true,
 })
 const organizeSettings = reactive({
@@ -2964,6 +2987,7 @@ const openOrganizeAddDialog = () => {
     rename_marker: '',
     use_ffprobe: 'false',
     use_tmdb: 'true',
+    auto_categorize: 'false',
     recursive: true,
   })
   organizeShowDialog.value = true
@@ -2984,6 +3008,7 @@ const editOrganizeTask = (task) => {
     rename_marker: cfg.rename_marker || '',
     use_ffprobe: cfg.use_ffprobe ? 'true' : 'false',
     use_tmdb: cfg.use_tmdb !== false ? 'true' : 'false',
+    auto_categorize: cfg.auto_categorize ? 'true' : 'false',
     recursive: cfg.recursive !== false,
   })
   organizeShowDialog.value = true
@@ -3019,6 +3044,7 @@ const saveOrganizeTask = async () => {
     rename_marker: organizeForm.rename_marker,
     use_ffprobe: organizeForm.use_ffprobe === 'true',
     use_tmdb: organizeForm.use_tmdb === 'true',
+    auto_categorize: organizeForm.auto_categorize === 'true',
     recursive: organizeForm.recursive,
   }
 

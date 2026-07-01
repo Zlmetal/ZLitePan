@@ -163,17 +163,18 @@ def is_same_generated_name(current_name: str, generated_name: str) -> bool:
 
 
 def parse_season_dir_number(name: str) -> Optional[int]:
-    """从 Season 00 / S01 / 第1季 (2016) 4K 等季目录名解析季号；0 表示特别篇。"""
+    """从 Season 00 / S01 / 第1季 / 片名第X季 等季目录名解析季号；0 表示特别篇。"""
     raw = (name or "").strip()
     if not raw:
         return None
-    patterns = (
+    # 精确匹配：目录名本身就是季标识（Season 01 / S1 / 第1季）
+    strict_patterns = (
         (r"^(?:season|series)\s*(\d{1,3})\b", lambda m: int(m.group(1))),
         (r"^s(\d{1,3})\b", lambda m: int(m.group(1))),
         (r"^第\s*(\d{1,3})\s*季", lambda m: int(m.group(1))),
         (r"^第([零〇一二两三四五六七八九十百]+)季", lambda m: chinese_number_to_int(m.group(1))),
     )
-    for pattern, extractor in patterns:
+    for pattern, extractor in strict_patterns:
         m = re.match(pattern, raw, flags=re.IGNORECASE)
         if not m:
             continue
@@ -183,6 +184,28 @@ def parse_season_dir_number(name: str) -> Optional[int]:
             num = None
         if num is not None:
             return num
+
+    # 宽松匹配：目录名含"片名第X季"（如"百变小樱第2季"、"名侦探柯南第3季"）
+    # 也匹配 "Season X" 嵌在名字中间的情况
+    relaxed_patterns = (
+        r"第\s*(\d{1,3})\s*季",
+        r"[\s._\-]第([零〇一二两三四五六七八九十百]+)季",
+        r"[\s._\-](?:season|series)\s*(\d{1,3})\b",
+        r"[\s._\-]s(\d{1,3})\b",
+    )
+    for pattern in relaxed_patterns:
+        m = re.search(pattern, raw, flags=re.IGNORECASE)
+        if m:
+            try:
+                num_str = m.group(1)
+                if num_str.isdigit():
+                    num = int(num_str)
+                else:
+                    num = chinese_number_to_int(num_str)
+                if num is not None:
+                    return num
+            except (TypeError, ValueError):
+                continue
     return None
 
 
@@ -347,6 +370,8 @@ def apply_episode_fallbacks(name: str, result: dict) -> dict:
             rf"(?:第\s*{number_pattern}\s*[集话話回期])",
             rf"(?:^|[\s._\-\[])(?:EP|Ep|ep|Episode|episode|E)\s*{number_pattern}(?:$|[\s._\-\]])",
             rf"(?:^|[\s._\-\[]){number_pattern}\s*(?:集|话|話|回|期)(?:$|[\s._\-\]:：])",
+            # 纯数字集号（文件名仅有数字+扩展名，如 01.mkv / 001.mp4 / 1.avi）
+            # 仅在 compact 长度较短且全部由数字组成时匹配，避免误匹配文件名中的其他数字
         ]
         for pattern in episode_patterns:
             m = re.search(pattern, compact, flags=re.IGNORECASE)
@@ -355,6 +380,16 @@ def apply_episode_fallbacks(name: str, result: dict) -> dict:
             episode = parse_episode_number(m.group(1))
             matched_span = m.span()
             break
+
+    # 纯数字集号回退：文件名只有数字+扩展名（如 01.mkv、001.mp4）
+    # 仅在未命中任何集数模式 且 compact 仅含 1~4 位数字时生效
+    if episode is None and not invalid_season_episode_seen:
+        numeric_only = re.fullmatch(r"(\d{1,4})", compact)
+        if numeric_only:
+            num = int(numeric_only.group(1))
+            if 1 <= num <= 9999:
+                episode = num
+                matched_span = numeric_only.span()
 
     if season is not None and parsed.get("season") is None:
         parsed["season"] = season
@@ -544,6 +579,65 @@ def strip_trailing_number(name: str) -> Tuple[str, Optional[int]]:
     return title_part, num
 
 
+# ── 中文目录名预解析 ──────────────────────────────────────
+# 常见格式："2026.韩剧.铁拳教育" "国产剧.庆余年" "日漫.进击的巨人" "美剧.绝命毒师"
+# 目标：提取 year + title，剥离类型标记
+
+_CN_MEDIA_TYPE_KEYWORDS = [
+    "韩剧", "国产剧", "国剧", "港剧", "台剧", "美剧", "英剧", "日剧",
+    "泰剧", "韩综", "国产综艺", "综艺", "日漫", "国漫", "欧美动漫",
+    "国产动漫", "动漫", "纪录片", "演唱会", "电影",
+    "日韩剧", "华语剧", "海外剧", "短剧", "网络剧", "网剧",
+    "韩影", "国产电影", "华语电影", "欧美电影", "日本电影", "韩国电影",
+]
+
+_CN_DIR_PREFIX_YEAR_TYPE_RE = re.compile(
+    r'^(?P<year>\d{4})\s*[.\s]\s*(?P<type_kw>'
+    + '|'.join(re.escape(kw) for kw in _CN_MEDIA_TYPE_KEYWORDS)
+    + r')\s*[.\s]\s*(?P<rest>.+)$'
+)
+_CN_DIR_TYPE_ONLY_RE = re.compile(
+    r'^(?P<type_kw>'
+    + '|'.join(re.escape(kw) for kw in _CN_MEDIA_TYPE_KEYWORDS)
+    + r')\s*[.\s]\s*(?P<rest>.+)$'
+)
+
+
+def _parse_chinese_dir_naming(raw: str) -> str:
+    """尝试解析中文常见目录命名格式，返回规范化的目录名。
+
+    输入: "2026.韩剧.铁拳教育"
+    输出: "铁拳教育 (2026)"
+
+    输入: "韩剧.庆余年 (2024)"
+    输出: "庆余年 (2024)"
+
+    输入: "日漫.进击的巨人"
+    输出: "进击的巨人"
+
+    如果不匹配任何模式，原样返回。
+    """
+    if not raw:
+        return raw
+
+    # 模式1：年份.类型.片名 → 片名 (年份)
+    m = _CN_DIR_PREFIX_YEAR_TYPE_RE.match(raw)
+    if m:
+        year_str = m.group("year")
+        rest = m.group("rest").strip()
+        if rest:
+            return f"{rest} ({year_str})"
+
+    # 模式2：类型.片名（可能含已有年份括号） → 剥离类型前缀
+    m = _CN_DIR_TYPE_ONLY_RE.match(raw)
+    if m:
+        rest = m.group("rest").strip()
+        if rest:
+            return rest
+
+    return raw
+
+
 def parse_dir_name(name: str) -> dict:
     raw = (name or "").strip()
     # 修复用户场景：有时目录名末尾误带媒体扩展名（如 "xxx.mkv" 作为文件夹名）
@@ -555,6 +649,9 @@ def parse_dir_name(name: str) -> dict:
     # 剥掉已有的 {tmdb-XXX} / [imdb-ttXXX] 等元数据标签，防止 guessit 误把 (YYYY) {tmdb-NNN} 当 SYYYY EpNNN
     raw = strip_known_id_tags(raw).strip()
     raw = strip_release_site_prefix(raw)
+
+    # ── 中文目录名预解析（年份.类型.片名 / 类型.片名） ──
+    raw = _parse_chinese_dir_naming(raw)
 
     def _clean(out: dict) -> dict:
         if out.get("title"):
@@ -2028,3 +2125,197 @@ def extract_special_label(name: str) -> Optional[str]:
         except ValueError:
             return f"{kind}{num}"
     return kind
+
+
+# ─────────────────────────────────────────────
+# 自动分类策略（基于 TMDB genres / origin_country）
+# ─────────────────────────────────────────────
+
+# 一次分类：TMDB genre_id → 中文分类目录名
+_GENRE_ID_TO_PRIMARY = {
+    # 电影
+    28: "电影",          # Action
+    12: "电影",          # Adventure
+    16: "动漫",          # Animation
+    35: "电影",          # Comedy
+    80: "电影",          # Crime
+    99: "纪录片",        # Documentary
+    18: "电影",          # Drama
+    10751: "综艺",       # Family
+    14: "电影",          # Fantasy
+    36: "历史",          # History → 归入电影
+    27: "电影",          # Horror
+    10402: "电影",       # Music
+    9648: "电影",        # Mystery
+    10749: "电影",       # Romance
+    878: "电影",         # Science Fiction
+    10770: "综艺",       # TV Movie
+    53: "电影",          # Thriller
+    10752: "电影",       # War
+    37: "电影",          # Western
+    # 电视剧特有
+    10759: "电影",       # Action & Adventure（TV）
+    10762: "动漫",       # Kids（TV）
+    10763: "新闻",       # News（TV）→ 归入纪录片
+    10764: "综艺",       # Reality（TV）
+    10765: "综艺",       # Sci-Fi & Fantasy（TV）→ 归入电影（科幻）
+    10766: "综艺",       # Soap（TV）
+    10767: "综艺",       # Talk（TV）
+    10768: "电影",       # War & Politics（TV）
+}
+
+# 特殊关键词映射（用于没有 genre 时的回退）
+# 格式：(关键词, 一次分类)
+_FILENAME_KEYWORD_PRIMARY = [
+    ("演唱会", "演唱会"),
+    ("concert", "演唱会"),
+    ("live", "演唱会"),
+    ("纪录片", "纪录片"),
+    ("documentary", "纪录片"),
+    ("综艺", "综艺"),
+    ("variety", "综艺"),
+    ("真人秀", "综艺"),
+    ("动漫", "动漫"),
+    ("anime", "动漫"),
+    ("纪录", "纪录片"),
+]
+
+# 二次分类（地区）：origin_country → 地区目录名
+_COUNTRY_TO_REGION = {
+    "CN": "国产",
+    "HK": "国产",      # 香港
+    "TW": "国产",      # 台湾
+    "MO": "国产",      # 澳门
+    "US": "欧美",
+    "GB": "欧美",      # 英国
+    "FR": "欧美",      # 法国
+    "DE": "欧美",      # 德国
+    "IT": "欧美",      # 意大利
+    "ES": "欧美",      # 西班牙
+    "RU": "欧美",      # 俄罗斯
+    "CA": "欧美",      # 加拿大
+    "AU": "欧美",      # 澳大利亚
+    "KR": "日韩",
+    "JP": "日韩",
+}
+
+# 基于语言代码的回退地区映射（用于 origin_country 缺失时）
+_LANG_TO_REGION = {
+    "zh": "国产",
+    "ja": "日韩",
+    "ko": "日韩",
+    "en": "欧美",
+    "fr": "欧美",
+    "de": "欧美",
+    "es": "欧美",
+    "ru": "欧美",
+    "it": "欧美",
+}
+
+# 默认分类
+_DEFAULT_PRIMARY = "电影"
+_DEFAULT_REGION = "其他"
+
+
+def build_auto_category_path(
+    tmdb_raw: Optional[dict] = None,
+    media_kind: str = "movie",
+    title: str = "",
+) -> List[str]:
+    """根据 TMDB 元数据自动生成分类路径。
+
+    返回分类目录列表，如 ["电影", "国产"] 或 ["动漫", "日韩"]。
+    如果信息不足，回退到默认分类。
+
+    参数:
+        tmdb_raw: TMDB API 返回的原始数据（包含 genres, origin_country 等）
+        media_kind: "movie" 或 "tv"
+        title: 标题（用于关键词回退）
+    """
+    primary = _classify_primary(tmdb_raw, media_kind, title)
+    region = _classify_region(tmdb_raw, title)
+    return [primary, region]
+
+
+def _classify_primary(
+    tmdb_raw: Optional[dict],
+    media_kind: str,
+    title: str,
+) -> str:
+    """一次分类：判定属于 电影/剧集/动漫/纪录片/综艺/演唱会。"""
+    # 1. 从 TMDB genres 判定
+    if tmdb_raw:
+        genres = tmdb_raw.get("genres") or []
+        genre_ids = [g.get("id") for g in genres if isinstance(g, dict) and g.get("id")]
+
+        # 检查是否有纪录片 genre（优先级高）
+        if 99 in genre_ids:
+            return "纪录片"
+
+        # 检查综艺类（TV 特有 genre）
+        variety_ids = {10751, 10764, 10766, 10767}  # Family, Reality, Soap, Talk
+        if variety_ids & set(genre_ids):
+            return "综艺"
+
+        # 动漫判定：Animation genre 或 TV-Kids
+        if 16 in genre_ids or 10762 in genre_ids:
+            return "动漫"
+
+        # 演唱会/音乐类
+        if 10402 in genre_ids:  # Music
+            return "演唱会"
+
+        # 其余 genre_id 查表
+        for gid in genre_ids:
+            if gid in _GENRE_ID_TO_PRIMARY:
+                mapped = _GENRE_ID_TO_PRIMARY[gid]
+                if mapped != "电影":
+                    return mapped
+                # 多个 genre 都映射为"电影"时，继续看是否有更具体的
+
+    # 2. 文件名关键词回退（无 TMDB 数据时）
+    title_lower = (title or "").lower()
+    for keyword, category in _FILENAME_KEYWORD_PRIMARY:
+        if keyword.lower() in title_lower:
+            return category
+
+    # 3. 默认
+    return _DEFAULT_PRIMARY
+
+
+def _classify_region(
+    tmdb_raw: Optional[dict],
+    title: str = "",
+) -> str:
+    """二次分类：判定地区为 国产/欧美/日韩/其他。"""
+    if tmdb_raw:
+        # 1. origin_country
+        origin_countries = tmdb_raw.get("origin_country") or []
+        if isinstance(origin_countries, list) and origin_countries:
+            for cc in origin_countries:
+                cc_upper = (cc or "").strip().upper()
+                if cc_upper in _COUNTRY_TO_REGION:
+                    return _COUNTRY_TO_REGION[cc_upper]
+
+        # 2. spoken_languages（部分 TV 条目）
+        langs = tmdb_raw.get("spoken_languages") or []
+        if isinstance(langs, list):
+            for lang_obj in langs:
+                iso = (lang_obj.get("iso_639_1") or "") if isinstance(lang_obj, dict) else ""
+                if iso and iso.lower() in _LANG_TO_REGION:
+                    return _LANG_TO_REGION[iso]
+
+        # 3. original_language
+        orig_lang = (tmdb_raw.get("original_language") or "").strip().lower()
+        if orig_lang and orig_lang in _LANG_TO_REGION:
+            return _LANG_TO_REGION[orig_lang]
+
+    # 4. 标题字符回退（无 TMDB 数据时根据标题推测）
+    cn_chars = re.sub(r"[^\u4e00-\u9fa5]", "", title or "")
+    jp_kr_chars = re.sub(r"[^\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]", "", title or "")
+    if cn_chars:
+        return "国产"
+    if jp_kr_chars:
+        return "日韩"
+
+    return _DEFAULT_REGION

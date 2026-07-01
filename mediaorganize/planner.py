@@ -397,6 +397,7 @@ class Planner:
         self.target_root_id = str(self.cfg.get("target_root_id") or "") if self.action_type == "move" else ""
 
         self.use_tmdb = bool(self.cfg.get("use_tmdb", True))
+        self.auto_categorize = bool(self.cfg.get("auto_categorize", False))
         self.use_ffprobe = bool(self.cfg.get("use_ffprobe", False))
 
         self.tmdb_api_key = self.settings.get("tmdb_api_key") or ""
@@ -409,6 +410,7 @@ class Planner:
         self.ffprobe_timeout = int(self.settings.get("ffprobe_timeout_seconds") or 30)
         self.ffprobe_concurrency = max(1, int(self.settings.get("ffprobe_concurrency") or 2))
         self._tv_seasons_cache: Dict[str, list] = {}
+        self._tmdb_raw_cache: Dict[str, dict] = {}
 
     def _next_id(self) -> str:
         self.action_seq += 1
@@ -1151,6 +1153,10 @@ class Planner:
         tmdb_id = tmdb_info.get("tmdb_id", "")
         tmdb_title = tmdb_info.get("tmdb_title", "")
         tmdb_original = tmdb_info.get("tmdb_original", "")
+        # 缓存 TMDB raw 数据供自动分类使用
+        tmdb_raw_data = tmdb_info.get("raw") or {}
+        if tmdb_raw_data and self.auto_categorize:
+            self._tmdb_raw_cache[f"{group_key[3]}|{group_key[4]}"] = tmdb_raw_data
         if is_tv and tmdb_id:
             show_raw = tmdb_info.get("raw") or {}
             tv_seasons = await self._get_tv_seasons(tmdb_id)
@@ -1631,9 +1637,19 @@ class Planner:
             return ""
         if promoted_move_ref:
             return promoted_move_ref
-        media_kind, group_dir_id, _, _, _, _, _ = group_key
-        category_ancestors = self._category_ancestors(group_key, items)
-        parent_ref = self._build_target_category_parent_ref(category_ancestors)
+        media_kind, group_dir_id, _, title, _, _, _ = group_key
+        if self.auto_categorize:
+            # 自动分类模式：基于 TMDB 元数据生成分类路径
+            tmdb_raw = self._tmdb_raw_cache.get(f"{group_key[3]}|{group_key[4]}") or {}
+            category_path = rules.build_auto_category_path(
+                tmdb_raw=tmdb_raw, media_kind=media_kind, title=title or ""
+            )
+            parent_ref = self.target_root_id or self.parent_id
+            for cat_name in category_path:
+                parent_ref = self._ensure_dir_action(parent_ref, cat_name)
+        else:
+            category_ancestors = self._category_ancestors(group_key, items)
+            parent_ref = self._build_target_category_parent_ref(category_ancestors)
         ref = self._ensure_dir_action(parent_ref, work_dir_name)
         # 标记为作品目录，并记录对应的源 dir 用于整体移动优化
         src_dir_id = str(group_key[1]) if group_key[1] else ""

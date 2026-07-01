@@ -94,6 +94,7 @@ def _default_config_dict() -> dict:
         "season_folder_template": "Season {season:02d}",
         "use_ffprobe": False,
         "use_tmdb": True,
+        "auto_categorize": False,
         "overwrite_existing": False,
         "recursive": True,
     }
@@ -120,6 +121,7 @@ class TaskCreate(BaseModel):
     rename_marker: str = ""
     use_ffprobe: bool = False
     use_tmdb: bool = True
+    auto_categorize: bool = False
     overwrite_existing: bool = False
     recursive: bool = True
 
@@ -136,6 +138,7 @@ class TaskUpdate(BaseModel):
     rename_marker: Optional[str] = None
     use_ffprobe: Optional[bool] = None
     use_tmdb: Optional[bool] = None
+    auto_categorize: Optional[bool] = None
     overwrite_existing: Optional[bool] = None
     recursive: Optional[bool] = None
 
@@ -220,6 +223,7 @@ async def create_task(payload: TaskCreate, session_data: dict = Depends(require_
         "rename_marker": payload.rename_marker or "",
         "use_ffprobe": payload.use_ffprobe,
         "use_tmdb": payload.use_tmdb,
+        "auto_categorize": payload.auto_categorize,
         "overwrite_existing": payload.overwrite_existing,
         "recursive": payload.recursive,
     })
@@ -262,6 +266,7 @@ async def update_task(task_id: str, payload: TaskUpdate, session_data: dict = De
         "rename_marker": payload.rename_marker,
         "use_ffprobe": payload.use_ffprobe,
         "use_tmdb": payload.use_tmdb,
+        "auto_categorize": payload.auto_categorize,
         "overwrite_existing": payload.overwrite_existing,
         "recursive": payload.recursive,
     }
