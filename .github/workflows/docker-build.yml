@@ -12,7 +12,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/zlitepan
 
 jobs:
   build-and-push:
@@ -26,15 +25,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Generate image tags
-        id: tags
+        id: meta
         run: |
+          OWNER_LC=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           BRANCH=${GITHUB_REF_NAME//\//-}
           SHA_SHORT=$(git rev-parse --short HEAD)
-          TIMESTAMP=$(date +%Y%m%d%H%M%S)
 
-          echo "branch_tag=${BRANCH}" >> $GITHUB_OUTPUT
-          echo "sha_tag=${BRANCH}-${SHA_SHORT}" >> $GITHUB_OUTPUT
-          echo "time_tag=${BRANCH}-${TIMESTAMP}" >> $GITHUB_OUTPUT
+          echo "owner_lc=${OWNER_LC}" >> $GITHUB_OUTPUT
+          echo "image=${OWNER_LC}/zlitepan" >> $GITHUB_OUTPUT
+          echo "branch=${BRANCH}" >> $GITHUB_OUTPUT
 
           if [ "$BRANCH" = "main" ]; then
             echo "tags=${BRANCH},latest,${BRANCH}-${SHA_SHORT}" >> $GITHUB_OUTPUT
@@ -58,7 +57,7 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.tags }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
